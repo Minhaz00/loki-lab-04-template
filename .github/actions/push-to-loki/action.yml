@@ -1,0 +1,81 @@
+name: 'Push to Loki'
+description: 'Send a structured log line to the lab Loki via basic auth.'
+
+inputs:
+  level:
+    description: 'Log level: info, warn, error'
+    required: false
+    default: 'info'
+  message:
+    description: 'Human-readable message for this event'
+    required: true
+  job:
+    description: 'Job name (defaults to GITHUB_JOB)'
+    required: false
+    default: ''
+  step:
+    description: 'Step name'
+    required: false
+    default: ''
+  status:
+    description: 'Step/job status: running, success, failure, cancelled'
+    required: false
+    default: 'running'
+  extra:
+    description: 'Optional JSON object merged into the log body'
+    required: false
+    default: '{}'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Push log line to Loki
+      shell: bash
+      env:
+        LEVEL: ${{ inputs.level }}
+        MESSAGE: ${{ inputs.message }}
+        JOB_INPUT: ${{ inputs.job }}
+        STEP_INPUT: ${{ inputs.step }}
+        STATUS_INPUT: ${{ inputs.status }}
+        EXTRA: ${{ inputs.extra }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "${LOKI_URL:-}" || -z "${LOKI_USER:-}" || -z "${LOKI_PASSWORD:-}" ]]; then
+          echo "::warning::LOKI_URL/LOKI_USER/LOKI_PASSWORD not set as repo secrets — skipping push"
+          exit 0
+        fi
+
+        TS_NS=$(date +%s%N)
+        JOB_NAME="${JOB_INPUT:-${GITHUB_JOB:-unknown}}"
+
+        LINE=$(jq -nc \
+          --arg ts "$(date -u +%FT%TZ)" \
+          --arg level "$LEVEL" \
+          --arg message "$MESSAGE" \
+          --arg run_id "${GITHUB_RUN_ID:-}" \
+          --arg run_attempt "${GITHUB_RUN_ATTEMPT:-}" \
+          --arg job "$JOB_NAME" \
+          --arg step "$STEP_INPUT" \
+          --arg status "$STATUS_INPUT" \
+          --arg actor "${GITHUB_ACTOR:-}" \
+          --arg event "${GITHUB_EVENT_NAME:-}" \
+          --arg runner_os "${RUNNER_OS:-}" \
+          --argjson extra "$EXTRA" \
+          '{ts:$ts, level:$level, message:$message, run_id:$run_id, run_attempt:$run_attempt, job:$job, step:$step, status:$status, actor:$actor, event:$event, runner_os:$runner_os} + $extra')
+
+        PAYLOAD=$(jq -nc \
+          --arg ts "$TS_NS" \
+          --arg source "github-actions" \
+          --arg repo "${GITHUB_REPOSITORY:-}" \
+          --arg workflow "${GITHUB_WORKFLOW:-}" \
+          --arg branch "${GITHUB_REF_NAME:-}" \
+          --arg level "$LEVEL" \
+          --arg line "$LINE" \
+          '{streams:[{stream:{source:$source, repo:$repo, workflow:$workflow, branch:$branch, level:$level}, values:[[$ts, $line]]}]}')
+
+        curl -fsS -u "${LOKI_USER}:${LOKI_PASSWORD}" \
+          -H "Content-Type: application/json" \
+          -X POST "${LOKI_URL}" \
+          --data-raw "$PAYLOAD" \
+          || echo "::warning::Failed to push log line to Loki (non-fatal)"

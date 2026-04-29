@@ -1,0 +1,67 @@
+name: build-and-test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  LOKI_URL: ${{ secrets.LOKI_URL }}
+  LOKI_USER: ${{ secrets.LOKI_USER }}
+  LOKI_PASSWORD: ${{ secrets.LOKI_PASSWORD }}
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/push-to-loki
+        with:
+          message: "job started"
+          job: unit-tests
+          status: running
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        id: deps
+        run: |
+          # Slow path: feature/* branches get an artificial 8s sleep.
+          if [[ "${GITHUB_REF_NAME}" == feature/* ]]; then
+            echo "feature branch detected — slow install path"
+            sleep 8
+          fi
+          pip install -r requirements.txt
+
+      - name: Push install-deps outcome
+        if: always()
+        uses: ./.github/actions/push-to-loki
+        with:
+          level: ${{ steps.deps.outcome == 'success' && 'info' || 'error' }}
+          message: "install-deps ${{ steps.deps.outcome }}"
+          job: unit-tests
+          step: install-deps
+          status: ${{ steps.deps.outcome }}
+
+      - name: Run tests
+        id: tests
+        run: pytest -v --tb=short
+        continue-on-error: true
+
+      - name: Push test outcome
+        if: always()
+        uses: ./.github/actions/push-to-loki
+        with:
+          level: ${{ steps.tests.outcome == 'success' && 'info' || 'error' }}
+          message: "pytest ${{ steps.tests.outcome }}"
+          job: unit-tests
+          step: pytest
+          status: ${{ steps.tests.outcome }}
+          extra: ${{ steps.tests.outcome == 'failure' && '{"failed_test":"test_total_flaky"}' || '{}' }}
+
+      - name: Fail job if tests failed
+        if: steps.tests.outcome != 'success'
+        run: exit 1

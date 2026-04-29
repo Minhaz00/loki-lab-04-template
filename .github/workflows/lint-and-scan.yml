@@ -1,0 +1,51 @@
+name: lint-and-scan
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  LOKI_URL: ${{ secrets.LOKI_URL }}
+  LOKI_USER: ${{ secrets.LOKI_USER }}
+  LOKI_PASSWORD: ${{ secrets.LOKI_PASSWORD }}
+
+jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: ./.github/actions/push-to-loki
+        with:
+          message: "secret-scan started"
+          job: secret-scan
+          step: scan
+          status: running
+
+      - name: Secret tripwire
+        id: scan
+        run: |
+          # Trip on commit messages containing the magic string.
+          if git log -1 --pretty=%B | grep -q "TODO: api_key"; then
+            echo "secret-like string found in commit message"
+            exit 1
+          fi
+          echo "no tripwire match"
+        continue-on-error: true
+
+      - name: Push scan outcome
+        if: always()
+        uses: ./.github/actions/push-to-loki
+        with:
+          level: ${{ steps.scan.outcome == 'success' && 'info' || 'error' }}
+          message: "secret-scan ${{ steps.scan.outcome }}"
+          job: secret-scan
+          step: scan
+          status: ${{ steps.scan.outcome }}
+
+      - name: Fail job if scan tripped
+        if: steps.scan.outcome != 'success'
+        run: exit 1

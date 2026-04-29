@@ -1,0 +1,52 @@
+name: deploy-staging
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+  workflow_dispatch:
+
+env:
+  LOKI_URL: ${{ secrets.LOKI_URL }}
+  LOKI_USER: ${{ secrets.LOKI_USER }}
+  LOKI_PASSWORD: ${{ secrets.LOKI_PASSWORD }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/push-to-loki
+        with:
+          message: "deploy started"
+          job: deploy
+          step: deploy
+          status: running
+
+      - name: Deploy to staging
+        id: deploy
+        run: |
+          # Synthetic incident: feature/payments always 503s.
+          if [[ "${GITHUB_REF_NAME}" == "feature/payments" ]]; then
+            echo "deploy: 503 from staging gateway"
+            exit 1
+          fi
+          echo "deploy ok"
+        continue-on-error: true
+
+      - name: Push deploy outcome
+        if: always()
+        uses: ./.github/actions/push-to-loki
+        with:
+          level: ${{ steps.deploy.outcome == 'success' && 'info' || 'error' }}
+          message: "deploy ${{ steps.deploy.outcome }}"
+          job: deploy
+          step: deploy
+          status: ${{ steps.deploy.outcome }}
+          extra: '{"target":"staging"}'
+
+      - name: Fail job if deploy failed
+        if: steps.deploy.outcome != 'success'
+        run: exit 1
