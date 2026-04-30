@@ -54,3 +54,5 @@ Add one webhook in **Settings → Webhooks**:
 | `lint-and-scan.yml::secret-scan` | exit 1 | Commit message contains `TODO: api_key` |
 
 These are the four shapes the Claude Code Skills in `loki-lab-04-code` are written to find.
+# notes
+# notes
